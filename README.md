@@ -26,4 +26,3 @@ tools/
 ```
 
 计算器从 [convolution-shape-calculator](https://github.com/AllPass001/convolution-shape-calculator) 迁入。原有提交历史完整保存在 [Git 历史归档](history/) 中，旧仓库也保留历史和迁移入口。后续更新统一维护在本仓库。
-

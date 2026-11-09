@@ -1,0 +1,15 @@
+# Local runtime state and machine-specific power-plan snapshots
+**/last-state.json
+**/last-error.txt
+**/initial-power-plan.txt
+**/verification.txt
+**/*.lnk
+
+# Editor and operating-system files
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+desktop.ini
+.DS_Store

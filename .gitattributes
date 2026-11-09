@@ -1,0 +1,10 @@
+* text=auto
+*.cs text eol=lf
+*.html text eol=lf
+# Preserve the migrated calculator exactly, including its existing line endings.
+tools/deep-learning-calculator/index.html -text
+*.md text eol=lf
+*.ps1 text eol=crlf
+*.exe binary
+*.ico binary
+*.png binary
