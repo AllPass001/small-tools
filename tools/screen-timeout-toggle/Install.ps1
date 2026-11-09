@@ -10,7 +10,7 @@ $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $executablePath
 $shortcut.WorkingDirectory = $PSScriptRoot
-$shortcut.Description = '一键切换插电关屏时间：1 分钟 / 从不。'
+$shortcut.Description = '1 分钟关屏并调至最低亮度 / 从不关屏并恢复原亮度。'
 $shortcut.IconLocation = (Join-Path $PSScriptRoot 'ScreenTimeoutToggle.ico') + ',0'
 $shortcut.Hotkey = ''
 $shortcut.Save()

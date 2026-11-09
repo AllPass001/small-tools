@@ -1,11 +1,14 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
 using System.IO;
+using System.Management;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using System.Xml;
 
 namespace ScreenTimeout
 {
@@ -82,6 +85,187 @@ namespace ScreenTimeout
         }
     }
 
+    public sealed class MonitorBrightness
+    {
+        public string InstanceName;
+        public byte Current;
+        public byte Minimum;
+    }
+
+    public sealed class BrightnessResult
+    {
+        public string Message;
+        public bool Warning;
+        public BrightnessResult(string message, bool warning) { Message = message; Warning = warning; }
+    }
+
+    public static class BrightnessSettings
+    {
+        public static readonly string BackupPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "brightness-backup.xml");
+
+        public static List<MonitorBrightness> Read()
+        {
+            List<MonitorBrightness> result = new List<MonitorBrightness>();
+            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\wmi", "SELECT * FROM WmiMonitorBrightness WHERE Active=TRUE"))
+            using (ManagementObjectCollection monitors = searcher.Get())
+            {
+                foreach (ManagementObject monitor in monitors)
+                using (monitor)
+                {
+                    byte[] levels = (byte[])monitor["Level"];
+                    if (levels == null || levels.Length == 0) continue;
+                    byte minimum = levels[0];
+                    foreach (byte level in levels) if (level < minimum) minimum = level;
+                    result.Add(new MonitorBrightness { InstanceName = (string)monitor["InstanceName"], Current = (byte)monitor["CurrentBrightness"], Minimum = minimum });
+                }
+            }
+            return result;
+        }
+
+        private static MonitorBrightness Find(List<MonitorBrightness> monitors, string instance)
+        {
+            return monitors.Find(delegate(MonitorBrightness monitor) { return String.Equals(monitor.InstanceName, instance, StringComparison.OrdinalIgnoreCase); });
+        }
+
+        private static void SetOne(string instance, byte value)
+        {
+            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("root\\wmi", "SELECT * FROM WmiMonitorBrightnessMethods WHERE Active=TRUE"))
+            using (ManagementObjectCollection methods = searcher.Get())
+            {
+                foreach (ManagementObject method in methods)
+                using (method)
+                {
+                    if (!String.Equals((string)method["InstanceName"], instance, StringComparison.OrdinalIgnoreCase)) continue;
+                    using (ManagementBaseObject parameters = method.GetMethodParameters("WmiSetBrightness"))
+                    {
+                        parameters["Timeout"] = 0U;
+                        parameters["Brightness"] = value;
+                        using (ManagementBaseObject output = method.InvokeMethod("WmiSetBrightness", parameters, null))
+                        {
+                            // Some laptop providers implement this as a void method.
+                            // Always verify the real brightness below, even without a return value.
+                            if (output != null && output.Properties["ReturnValue"] != null)
+                            {
+                                uint code = Convert.ToUInt32(output["ReturnValue"]);
+                                if (code != 0) throw new Win32Exception((int)code, "显示器拒绝调整亮度。");
+                            }
+                        }
+                    }
+                    for (int attempt = 0; attempt < 12; attempt++)
+                    {
+                        MonitorBrightness actual = Find(Read(), instance);
+                        if (actual != null && actual.Current == value) return;
+                        Thread.Sleep(100);
+                    }
+                    throw new InvalidOperationException("亮度未达到目标值，请检查显示器或自动亮度设置。");
+                }
+            }
+            throw new InvalidOperationException("未找到对应屏幕的亮度控制接口。");
+        }
+
+        private static void Apply(List<MonitorBrightness> before, List<MonitorBrightness> targets)
+        {
+            try
+            {
+                foreach (MonitorBrightness target in targets) SetOne(target.InstanceName, target.Current);
+            }
+            catch
+            {
+                // An unsuccessful multi-monitor operation must not leave some screens dimmed.
+                foreach (MonitorBrightness monitor in before)
+                {
+                    if (Find(targets, monitor.InstanceName) == null) continue;
+                    try { SetOne(monitor.InstanceName, monitor.Current); } catch { }
+                }
+                throw;
+            }
+        }
+
+        private static List<MonitorBrightness> LoadBackup()
+        {
+            List<MonitorBrightness> result = new List<MonitorBrightness>();
+            if (!File.Exists(BackupPath)) return result;
+            XmlReaderSettings settings = new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null };
+            using (XmlReader reader = XmlReader.Create(BackupPath, settings))
+            {
+                while (reader.Read())
+                {
+                    if (reader.NodeType != XmlNodeType.Element || reader.Name != "monitor") continue;
+                    string instance = reader.GetAttribute("instance");
+                    byte value;
+                    if (String.IsNullOrEmpty(instance) || !Byte.TryParse(reader.GetAttribute("value"), out value) || value > 100)
+                        throw new InvalidDataException("保存的亮度记录无效，已保留记录供检查。");
+                    result.Add(new MonitorBrightness { InstanceName = instance, Current = value });
+                }
+            }
+            return result;
+        }
+
+        private static void SaveBackup(List<MonitorBrightness> monitors)
+        {
+            string temporaryPath = BackupPath + ".tmp";
+            XmlWriterSettings settings = new XmlWriterSettings { Indent = true, Encoding = Encoding.UTF8 };
+            using (XmlWriter writer = XmlWriter.Create(temporaryPath, settings))
+            {
+                writer.WriteStartElement("brightnessBackup");
+                foreach (MonitorBrightness monitor in monitors)
+                {
+                    writer.WriteStartElement("monitor");
+                    writer.WriteAttributeString("instance", monitor.InstanceName);
+                    writer.WriteAttributeString("value", monitor.Current.ToString());
+                    writer.WriteEndElement();
+                }
+                writer.WriteEndElement();
+            }
+            if (File.Exists(BackupPath)) File.Replace(temporaryPath, BackupPath, null);
+            else File.Move(temporaryPath, BackupPath);
+        }
+
+        public static BrightnessResult Update(bool dim, bool statusOnly)
+        {
+            try
+            {
+                List<MonitorBrightness> current = Read();
+                if (current.Count == 0) return new BrightnessResult("未检测到支持亮度控制的屏幕", true);
+                if (statusOnly) return new BrightnessResult("当前亮度：" + current[0].Current + "%" + (current.Count > 1 ? "（首块屏幕）" : ""), false);
+                List<MonitorBrightness> backup = LoadBackup();
+                if (dim)
+                {
+                    List<MonitorBrightness> targets = new List<MonitorBrightness>();
+                    foreach (MonitorBrightness monitor in current)
+                    {
+                        // Keep the first original value across repeated --minute invocations.
+                        if (Find(backup, monitor.InstanceName) == null)
+                            backup.Add(new MonitorBrightness { InstanceName = monitor.InstanceName, Current = monitor.Current });
+                        targets.Add(new MonitorBrightness { InstanceName = monitor.InstanceName, Current = monitor.Minimum });
+                    }
+                    // Persist the restoration value before changing the hardware.
+                    SaveBackup(backup);
+                    Apply(current, targets);
+                    return new BrightnessResult("亮度已降至最低：" + current[0].Minimum + "%" + (current.Count > 1 ? "（多屏已联动）" : ""), false);
+                }
+                if (backup.Count == 0) return new BrightnessResult("没有待恢复的亮度，保持当前 " + current[0].Current + "%", false);
+                List<MonitorBrightness> restore = new List<MonitorBrightness>();
+                List<MonitorBrightness> remaining = new List<MonitorBrightness>();
+                foreach (MonitorBrightness monitor in backup)
+                {
+                    if (Find(current, monitor.InstanceName) != null) restore.Add(monitor);
+                    else remaining.Add(monitor);
+                }
+                Apply(current, restore);
+                if (remaining.Count == 0) File.Delete(BackupPath);
+                else SaveBackup(remaining);
+                if (restore.Count == 0) return new BrightnessResult("原屏幕暂未连接，已保留亮度恢复记录", true);
+                return new BrightnessResult("已恢复原亮度：" + restore[0].Current + "%" + (remaining.Count > 0 ? "（部分屏幕待连接）" : ""), remaining.Count > 0);
+            }
+            catch (Exception ex)
+            {
+                // Timeout switching remains available on unsupported monitors or driver failures.
+                return new BrightnessResult("亮度未完成：" + ex.Message, true);
+            }
+        }
+    }
+
     internal sealed class StatusPopup : Form
     {
         private readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
@@ -96,11 +280,11 @@ namespace ScreenTimeout
             }
         }
 
-        public StatusPopup(string heading, PowerState state, bool preview)
+        public StatusPopup(string heading, PowerState state, BrightnessResult brightness, bool preview)
         {
             Text = "关屏时间切换";
             AutoScaleMode = AutoScaleMode.Dpi;
-            ClientSize = new Size(370, 150);
+            ClientSize = new Size(410, 190);
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = preview;
             TopMost = true;
@@ -111,7 +295,7 @@ namespace ScreenTimeout
             Label title = new Label();
             title.Text = heading;
             title.ForeColor = Color.FromArgb(160, 177, 198);
-            title.SetBounds(20, 15, 320, 24);
+            title.SetBounds(20, 15, 370, 24);
             Controls.Add(title);
 
             Label value = new Label();
@@ -121,10 +305,16 @@ namespace ScreenTimeout
             value.SetBounds(17, 43, 335, 42);
             Controls.Add(value);
 
+            Label brightnessLabel = new Label();
+            brightnessLabel.Text = brightness.Message;
+            brightnessLabel.ForeColor = brightness.Warning ? Color.FromArgb(255, 203, 145) : Color.FromArgb(190, 220, 235);
+            brightnessLabel.SetBounds(20, 91, 370, 42);
+            Controls.Add(brightnessLabel);
+
             Label note = new Label();
-            note.Text = "仅接通电源 · 电池及睡眠设置保持原样\n提示会自动关闭 · 点击此提示也可关闭";
+            note.Text = "插电关屏计时 + 屏幕亮度联动\n电池关屏与睡眠时间保持原样 · 点击关闭";
             note.ForeColor = Color.FromArgb(180, 191, 207);
-            note.SetBounds(20, 97, 335, 42);
+            note.SetBounds(20, 140, 370, 42);
             Controls.Add(note);
             foreach (Control control in Controls) control.Click += delegate { Close(); };
             Click += delegate { Close(); };
@@ -134,7 +324,7 @@ namespace ScreenTimeout
                 Location = new Point(area.Right - Width - 20, area.Bottom - Height - 20);
                 timer.Start();
             };
-            timer.Interval = preview ? 12000 : 3200;
+            timer.Interval = preview ? 12000 : brightness.Warning ? 7000 : 3200;
             timer.Tick += delegate { Close(); };
         }
 
@@ -149,13 +339,19 @@ namespace ScreenTimeout
     {
         private static readonly string Folder = AppDomain.CurrentDomain.BaseDirectory;
 
-        private static void SaveState(PowerState state, string action)
+        private static string JsonString(string value)
+        {
+            return value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
+        }
+
+        private static void SaveState(PowerState state, string action, BrightnessResult brightness)
         {
             try
             {
                 string json = "{\r\n  \"updatedAt\": \"" + DateTimeOffset.Now.ToString("o") +
                     "\",\r\n  \"action\": \"" + action + "\",\r\n  \"scheme\": \"" + state.Scheme +
-                    "\",\r\n  \"acSeconds\": " + state.AcSeconds + ",\r\n  \"dcSeconds\": " + state.DcSeconds + "\r\n}\r\n";
+                    "\",\r\n  \"acSeconds\": " + state.AcSeconds + ",\r\n  \"dcSeconds\": " + state.DcSeconds +
+                    ",\r\n  \"brightnessMessage\": \"" + JsonString(brightness.Message) + "\",\r\n  \"brightnessWarning\": " + (brightness.Warning ? "true" : "false") + "\r\n}\r\n";
                 File.WriteAllText(Path.Combine(Folder, "last-state.json"), json, Encoding.UTF8);
                 string errorPath = Path.Combine(Folder, "last-error.txt");
                 if (File.Exists(errorPath)) File.Delete(errorPath);
@@ -193,13 +389,14 @@ namespace ScreenTimeout
                         uint target = mode == "--minute" ? 60U : mode == "--never" ? 0U : state.AcSeconds == 0 ? 60U : 0U;
                         state = PowerSettings.Set(state, target);
                     }
-                    SaveState(state, mode.Substring(2));
+                    BrightnessResult brightness = BrightnessSettings.Update(state.AcSeconds == 60, mode == "--status");
+                    SaveState(state, mode.Substring(2), brightness);
                     if (!quiet)
                     {
-                        using (StatusPopup popup = new StatusPopup(mode == "--status" ? "当前插电关屏设置" : "已切换插电关屏设置", state, mode == "--status"))
+                        using (StatusPopup popup = new StatusPopup(mode == "--status" ? "当前关屏与亮度设置" : "已切换关屏与亮度设置", state, brightness, mode == "--status"))
                             Application.Run(popup);
                     }
-                    return 0;
+                    return brightness.Warning && mode != "--status" ? 3 : 0;
                 }
                 catch (Exception ex)
                 {

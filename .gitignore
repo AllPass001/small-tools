@@ -1,6 +1,8 @@
 # Local runtime state and machine-specific power-plan snapshots
 **/last-state.json
 **/last-error.txt
+**/brightness-backup.xml
+**/brightness-backup.xml.tmp
 **/initial-power-plan.txt
 **/verification.txt
 **/*.lnk

@@ -4,7 +4,7 @@
 
 | 工具 | 功能 | 使用方式 |
 | --- | --- | --- |
-| [关屏时间切换](tools/screen-timeout-toggle/) | Windows 插电关屏时间在「1 分钟」和「从不」之间切换 | 下载仓库 ZIP 并解压，双击目录中的 `关屏时间切换.exe` |
+| [关屏时间切换](tools/screen-timeout-toggle/) | 「1 分钟关屏 + 最低亮度」与「从不关屏 + 恢复原亮度」一键切换 | 下载仓库 ZIP 并解压，双击目录中的 `关屏时间切换.exe` |
 | [深度学习尺寸计算器](tools/deep-learning-calculator/) | 卷积、转置卷积、池化、感受野计算，支持目标尺寸反推 | 用浏览器打开目录中的 `index.html` |
 
 ## 下载和使用

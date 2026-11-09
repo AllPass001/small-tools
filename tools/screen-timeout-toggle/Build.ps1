@@ -17,14 +17,14 @@ $icon = [System.Drawing.Icon]::FromHandle($bitmap.GetHicon())
 $stream = [System.IO.File]::Create($iconPath)
 try { $icon.Save($stream) } finally { $stream.Dispose(); $icon.Dispose(); $graphics.Dispose(); $bitmap.Dispose(); $background.Dispose(); $screen.Dispose(); $pen.Dispose() }
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-& $compiler /nologo /target:winexe /optimize+ /platform:anycpu /codepage:65001 "/win32icon:$iconPath" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll "/out:$PSScriptRoot\关屏时间切换.exe" "$PSScriptRoot\ScreenTimeoutToggle.cs"
+& $compiler /nologo /target:winexe /optimize+ /platform:anycpu /codepage:65001 "/win32icon:$iconPath" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Management.dll /reference:System.Xml.dll "/out:$PSScriptRoot\关屏时间切换.exe" "$PSScriptRoot\ScreenTimeoutToggle.cs"
 if ($LASTEXITCODE -ne 0) { throw '编译失败。' }
 $shell = New-Object -ComObject WScript.Shell
 $shortcutPath = Join-Path $PSScriptRoot '关屏时间切换.lnk'
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = Join-Path $PSScriptRoot '关屏时间切换.exe'
 $shortcut.WorkingDirectory = $PSScriptRoot
-$shortcut.Description = '一键切换插电关屏时间：1 分钟 / 从不。'
+$shortcut.Description = '1 分钟关屏并调至最低亮度 / 从不关屏并恢复原亮度。'
 $shortcut.IconLocation = "$iconPath,0"
 $shortcut.Hotkey = ''
 $shortcut.Save()
